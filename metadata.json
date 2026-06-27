@@ -1,0 +1,6 @@
+{
+  "name": "AI 주식 추천 비서",
+  "description": "사용자의 투자 성향, 예산, 관심 분야를 분석하고 Google Search 실시간 그라운딩을 통해 최적의 주식을 추천하며, 가상 투자 포트폴리오를 관리해주는 스마트한 AI 주식 추천 서비스입니다.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
