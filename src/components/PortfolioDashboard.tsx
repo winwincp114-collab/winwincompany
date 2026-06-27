@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { PortfolioItem } from '../types';
-import { stockCatalog, generateChartData, CatalogStock } from '../data';
+import { PortfolioItem, AlertHistoryItem } from '../types';
+import { generateChartData, CatalogStock } from '../data';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { TrendingUp, TrendingDown, DollarSign, Wallet, Percent, Trash2, Plus, Info, Award } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Wallet, Percent, Trash2, Plus, Info, Award, RefreshCw, Bell } from 'lucide-react';
 
 interface PortfolioDashboardProps {
   portfolio: PortfolioItem[];
@@ -10,6 +10,12 @@ interface PortfolioDashboardProps {
   onAddItem: (ticker: string, name: string, market: 'US' | 'KR', price: number, shares: number, currency: '$' | '원') => void;
   onResetPortfolio: () => void;
   initialBudget: number;
+  catalog: CatalogStock[];
+  onSyncPrices: () => Promise<void>;
+  isSyncing: boolean;
+  onUpdateAlertPrice: (id: string, price: number) => void;
+  onRemoveAlert: (id: string) => void;
+  alertHistory: AlertHistoryItem[];
 }
 
 export default function PortfolioDashboard({
@@ -17,10 +23,21 @@ export default function PortfolioDashboard({
   onRemoveItem,
   onAddItem,
   onResetPortfolio,
-  initialBudget
+  initialBudget,
+  catalog,
+  onSyncPrices,
+  isSyncing,
+  onUpdateAlertPrice,
+  onRemoveAlert,
+  alertHistory
 }: PortfolioDashboardProps) {
-  const [selectedStock, setSelectedStock] = useState<CatalogStock | null>(stockCatalog[0]);
+  const [selectedTicker, setSelectedTicker] = useState<string>(catalog[0]?.ticker || 'NVDA');
   const [buyShares, setBuyShares] = useState<number>(10);
+  const [editingAlertId, setEditingAlertId] = useState<string | null>(null);
+
+  const selectedStock = useMemo(() => {
+    return catalog.find(item => item.ticker === selectedTicker) || catalog[0] || null;
+  }, [catalog, selectedTicker]);
 
   // Generate 7-day interactive chart data for selected stock
   const chartData = useMemo(() => {
@@ -153,16 +170,15 @@ export default function PortfolioDashboard({
               <span className="text-xs text-slate-500 font-medium">선택 종목:</span>
               <select
                 id="stock-selector-dropdown"
-                value={selectedStock?.ticker || ''}
+                value={selectedTicker}
                 onChange={(e) => {
-                  const stock = stockCatalog.find(s => s.ticker === e.target.value);
-                  if (stock) setSelectedStock(stock);
+                  setSelectedTicker(e.target.value);
                 }}
                 className="text-xs bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg focus:outline-none"
               >
-                {stockCatalog.map(s => (
+                {catalog.map(s => (
                   <option key={s.ticker} value={s.ticker}>
-                    {s.name} ({s.ticker})
+                    {s.name} ({s.ticker}) - {s.currency}{s.price.toLocaleString()}
                   </option>
                 ))}
               </select>
@@ -253,15 +269,31 @@ export default function PortfolioDashboard({
               <Award className="w-4 h-4 text-amber-500" />
               <span>나의 포트폴리오 자산 ({portfolio.length})</span>
             </h3>
-            {portfolio.length > 0 && (
+            <div className="flex items-center gap-2">
               <button
-                id="portfolio-reset-btn"
-                onClick={onResetPortfolio}
-                className="text-[10px] text-rose-500 font-semibold border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded transition-colors cursor-pointer"
+                id="portfolio-sync-btn"
+                onClick={onSyncPrices}
+                disabled={isSyncing}
+                className={`text-[10px] flex items-center gap-1 font-semibold border px-2 py-1 rounded transition-all cursor-pointer ${
+                  isSyncing 
+                    ? 'bg-slate-50 border-slate-200 text-slate-400' 
+                    : 'bg-indigo-50 border-indigo-200 text-indigo-600 hover:bg-indigo-100'
+                }`}
+                title="Google Search 기반 실시간 시장 가격 동기화"
               >
-                전체 초기화
+                <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? '동기화 중...' : '시세 동기화'}</span>
               </button>
-            )}
+              {portfolio.length > 0 && (
+                <button
+                  id="portfolio-reset-btn"
+                  onClick={onResetPortfolio}
+                  className="text-[10px] text-rose-500 font-semibold border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded transition-colors cursor-pointer"
+                >
+                  전체 초기화
+                </button>
+              )}
+            </div>
           </div>
 
           {portfolio.length === 0 ? (
@@ -297,7 +329,21 @@ export default function PortfolioDashboard({
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
 
-                    <div id={`asset-meta-${item.ticker}`} className="flex justify-between pr-6">
+                    {/* Price Alert Configuration button */}
+                    <button
+                      id={`alert-config-btn-${item.id}`}
+                      onClick={() => setEditingAlertId(editingAlertId === item.id ? null : item.id)}
+                      className={`absolute top-3.5 right-11 p-1.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer ${
+                        item.alertPrice 
+                          ? 'text-indigo-600' 
+                          : 'text-slate-400 hover:text-indigo-600'
+                      }`}
+                      title="가격 알림 설정"
+                    >
+                      <Bell className={`w-3.5 h-3.5 ${item.alertPrice && !item.alertTriggered ? 'animate-pulse' : ''}`} />
+                    </button>
+
+                    <div id={`asset-meta-${item.ticker}`} className="flex justify-between pr-14">
                       <div>
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono text-xs font-bold text-slate-700 bg-slate-200 px-1.5 py-0.2 rounded">
@@ -329,11 +375,146 @@ export default function PortfolioDashboard({
                         </span>
                       </div>
                     </div>
+
+                    {/* Inline Alert Config Form */}
+                    {editingAlertId === item.id && (
+                      <div id={`alert-config-panel-${item.id}`} className="p-2.5 bg-slate-100 border border-slate-200 rounded-xl space-y-2 text-xs">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-slate-750 flex items-center gap-1">
+                            <Bell className="w-3 h-3 text-indigo-500" />
+                            <span>실시간 목표가 알림 설정</span>
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">현재가: {item.currency}{item.currentPrice.toLocaleString()}</span>
+                        </div>
+                        <div className="flex gap-2">
+                          <div className="flex-1 relative">
+                            <span className="absolute left-2 top-2 text-slate-450 text-[11px] font-mono">{item.currency}</span>
+                            <input
+                              type="number"
+                              id={`alert-input-${item.id}`}
+                              placeholder="목표 알림 가격"
+                              defaultValue={item.alertPrice || ''}
+                              className="w-full pl-6 pr-2 py-1.5 border border-slate-300 rounded-lg bg-white text-slate-800 text-[11px] font-mono font-bold focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+                          <button
+                            onClick={() => {
+                              const input = document.getElementById(`alert-input-${item.id}`) as HTMLInputElement;
+                              const val = parseFloat(input?.value || '');
+                              if (!isNaN(val) && val > 0) {
+                                onUpdateAlertPrice(item.id, val);
+                              }
+                              setEditingAlertId(null);
+                            }}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[10px] px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                          >
+                            설정
+                          </button>
+                          <button
+                            onClick={() => setEditingAlertId(null)}
+                            className="bg-slate-200 hover:bg-slate-300 text-slate-600 font-bold text-[10px] px-2.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                          >
+                            닫기
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Active/Triggered Alert Badge */}
+                    {item.alertPrice && (
+                      <div id={`alert-badge-${item.id}`} className={`p-2 rounded-xl flex items-center justify-between text-[11px] border ${
+                        item.alertTriggered
+                          ? 'bg-rose-50 border-rose-200 text-rose-700 font-bold animate-pulse'
+                          : 'bg-indigo-50/70 border-indigo-150 text-indigo-700'
+                      }`}>
+                        <span className="flex items-center gap-1">
+                          <Bell className={`w-3 h-3 ${item.alertTriggered ? 'text-rose-500 fill-rose-500' : 'text-indigo-500'}`} />
+                          <span>목표가: {item.currency}{item.alertPrice.toLocaleString()} ({item.alertCondition === 'above' ? '이상' : '이하'})</span>
+                        </span>
+                        {item.alertTriggered ? (
+                          <span className="text-[9px] bg-rose-200 text-rose-800 px-1 py-0.2 rounded font-bold">도달 완료!</span>
+                        ) : (
+                          <button
+                            onClick={() => onRemoveAlert(item.id)}
+                            className="text-[10px] text-slate-400 hover:text-slate-600 font-bold underline cursor-pointer"
+                          >
+                            해제
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
+        </div>
+
+        {/* Price Alerts Monitor Card */}
+        <div id="dashboard-alerts-history-card" className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col space-y-4">
+          <div id="alerts-history-header" className="border-b border-slate-100 pb-3 flex justify-between items-center">
+            <h3 className="font-sans font-bold text-base text-slate-900 flex items-center gap-2">
+              <Bell className="w-4 h-4 text-indigo-500" />
+              <span>실시간 목표가 감시 현황</span>
+            </h3>
+            <span className="text-[10px] bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-bold animate-pulse">
+              ● 감시 중
+            </span>
+          </div>
+
+          <div className="space-y-3">
+            {/* Active alerts count */}
+            {portfolio.filter(item => item.alertPrice && !item.alertTriggered).length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-4 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                설정된 활성 대기 알림이 없습니다.<br/>위의 자산별 🔔 버튼을 통해 등록해보세요.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">대기 중인 알림 목록</span>
+                <div className="max-h-[140px] overflow-y-auto space-y-1.5 pr-1">
+                  {portfolio.filter(item => item.alertPrice && !item.alertTriggered).map(item => (
+                    <div key={item.id} className="text-xs p-2 bg-indigo-50/40 border border-indigo-100 rounded-xl flex justify-between items-center">
+                      <div>
+                        <span className="font-bold text-slate-800">{item.name}</span>
+                        <span className="text-[10px] text-slate-400 block font-mono">현재가: {item.currency}{item.currentPrice.toLocaleString()}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-bold text-indigo-700 font-mono text-[11px]">
+                          {item.currency}{item.alertPrice?.toLocaleString()} {item.alertCondition === 'above' ? '▲' : '▼'}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Triggered Alerts History */}
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">도달 완료 및 알림 이력 ({alertHistory.length})</span>
+              {alertHistory.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-4">알림이 작동한 이력이 아직 없습니다.</p>
+              ) : (
+                <div className="max-h-[180px] overflow-y-auto space-y-2 pr-1">
+                  {alertHistory.map((hist) => (
+                    <div key={hist.id} className="p-2.5 bg-slate-50 border border-slate-150 rounded-xl space-y-1">
+                      <div className="flex justify-between items-center text-[10px] text-slate-400 font-medium">
+                        <span className="bg-rose-50 text-rose-600 px-1.5 py-0.2 rounded font-bold">도달 성공</span>
+                        <span>{hist.timestamp}</span>
+                      </div>
+                      <p className="text-xs font-bold text-slate-800">
+                        {hist.name} ({hist.ticker})
+                      </p>
+                      <p className="text-[10px] text-slate-550 leading-normal">
+                        설정 {hist.currency}{hist.alertPrice.toLocaleString()} 돌파! <br/>
+                        <span className="font-bold text-rose-600 font-mono">도달가: {hist.currency}{hist.triggeredPrice.toLocaleString()}</span>
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

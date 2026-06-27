@@ -41,4 +41,18 @@ export interface PortfolioItem {
   shares: number;
   currency: string;
   dateAdded: string;
+  alertPrice?: number;
+  alertTriggered?: boolean;
+  alertCondition?: 'above' | 'below';
+}
+
+export interface AlertHistoryItem {
+  id: string;
+  ticker: string;
+  name: string;
+  alertPrice: number;
+  triggeredPrice: number;
+  condition: 'above' | 'below';
+  currency: string;
+  timestamp: string;
 }

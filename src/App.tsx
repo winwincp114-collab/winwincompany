@@ -4,8 +4,10 @@ import ProfileWizard from './components/ProfileWizard';
 import RecommendationCard from './components/RecommendationCard';
 import PortfolioDashboard from './components/PortfolioDashboard';
 import MarketNewsFeed from './components/MarketNewsFeed';
-import { InvestmentProfile, StockRecommendation, GroundingSource, PortfolioItem } from './types';
-import { TrendingUp, Award, Newspaper, Flame, HelpCircle, ExternalLink, RefreshCw, AlertCircle, Sparkles } from 'lucide-react';
+import { InvestmentProfile, StockRecommendation, GroundingSource, PortfolioItem, AlertHistoryItem } from './types';
+import { stockCatalog, CatalogStock } from './data';
+import { TrendingUp, Award, Newspaper, Flame, HelpCircle, ExternalLink, RefreshCw, AlertCircle, Sparkles, Bell } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'recommend' | 'portfolio' | 'news'>('recommend');
@@ -15,6 +17,128 @@ export default function App() {
   const [sources, setSources] = useState<GroundingSource[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isFallbackActive, setIsFallbackActive] = useState(false);
+
+  // Dynamic stock catalog state that gets populated with real-time prices
+  const [catalog, setCatalog] = useState<CatalogStock[]>(() => {
+    const saved = localStorage.getItem('ai_stock_catalog');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return stockCatalog;
+  });
+
+  // Keep catalog state saved
+  useEffect(() => {
+    localStorage.setItem('ai_stock_catalog', JSON.stringify(catalog));
+  }, [catalog]);
+
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // Price Alerts States
+  const [toasts, setToasts] = useState<AlertHistoryItem[]>([]);
+  const [alertHistory, setAlertHistory] = useState<AlertHistoryItem[]>(() => {
+    const saved = localStorage.getItem('ai_stock_alert_history');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return [];
+  });
+
+  // Keep alert history saved
+  useEffect(() => {
+    localStorage.setItem('ai_stock_alert_history', JSON.stringify(alertHistory));
+  }, [alertHistory]);
+
+  // Trigger auto-dismiss of toasts
+  useEffect(() => {
+    if (toasts.length > 0) {
+      const timer = setTimeout(() => {
+        setToasts(prev => prev.slice(0, prev.length - 1));
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toasts]);
+
+  // Synchronize dynamic prices across portfolio items and the catalog
+  const handleSyncPrices = async () => {
+    setIsSyncing(true);
+    try {
+      const portfolioTickers = portfolio.map(item => item.ticker);
+      const catalogTickers = catalog.map(item => item.ticker);
+      const uniqueTickers = Array.from(new Set([...portfolioTickers, ...catalogTickers]));
+
+      const response = await fetch('/api/realtime-prices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickers: uniqueTickers }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.isFallback) {
+          setIsFallbackActive(true);
+        }
+        if (data && data.prices && Array.isArray(data.prices)) {
+          const pricesMap: Record<string, { price: string; change?: string; isPositive?: boolean }> = {};
+          data.prices.forEach((p: any) => {
+            if (p.symbol) {
+              pricesMap[p.symbol] = p;
+              pricesMap[p.symbol.toUpperCase()] = p;
+            }
+          });
+
+          const parsePriceToNumber = (priceStr: string) => {
+            const cleanStr = priceStr.replace(/[^0-9.]/g, '');
+            const val = parseFloat(cleanStr);
+            return isNaN(val) ? 100 : val;
+          };
+
+          // Update user's virtual portfolio items with fresh values
+          setPortfolio(prev => {
+            return prev.map(item => {
+              const matched = pricesMap[item.ticker] || pricesMap[item.ticker.toUpperCase()];
+              if (matched) {
+                return {
+                  ...item,
+                  currentPrice: parsePriceToNumber(matched.price)
+                };
+              }
+              return item;
+            });
+          });
+
+          // Update stock catalog display prices
+          setCatalog(prev => {
+            return prev.map(item => {
+              const matched = pricesMap[item.ticker] || pricesMap[item.ticker.toUpperCase()];
+              if (matched) {
+                return {
+                  ...item,
+                  price: parsePriceToNumber(matched.price),
+                  change: matched.change || item.change,
+                  isPositive: matched.isPositive !== undefined ? matched.isPositive : item.isPositive
+                };
+              }
+              return item;
+            });
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Failed to sync stock prices:", err);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   // Initialize Portfolio with some realistic default items so the user has an active dashboard immediately
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>(() => {
@@ -57,6 +181,55 @@ export default function App() {
     localStorage.setItem('ai_stock_portfolio', JSON.stringify(portfolio));
   }, [portfolio]);
 
+  // Centralized Price Alert System Monitor
+  useEffect(() => {
+    const alertsToTrigger: Array<{ item: PortfolioItem; triggeredPrice: number }> = [];
+
+    portfolio.forEach(item => {
+      if (item.alertPrice && !item.alertTriggered) {
+        const isHit = item.alertCondition === 'above'
+          ? item.currentPrice >= item.alertPrice
+          : item.currentPrice <= item.alertPrice;
+
+        if (isHit) {
+          alertsToTrigger.push({ item, triggeredPrice: item.currentPrice });
+        }
+      }
+    });
+
+    if (alertsToTrigger.length > 0) {
+      // 1. Mark triggered alerts as active in portfolio state
+      setPortfolio(prev => {
+        return prev.map(item => {
+          const match = alertsToTrigger.find(a => a.item.id === item.id);
+          if (match) {
+            return {
+              ...item,
+              alertTriggered: true
+            };
+          }
+          return item;
+        });
+      });
+
+      // 2. Log triggered alerts to user UI (Toast and history list)
+      alertsToTrigger.forEach(({ item, triggeredPrice }) => {
+        const newAlert: AlertHistoryItem = {
+          id: Math.random().toString(),
+          ticker: item.ticker,
+          name: item.name,
+          alertPrice: item.alertPrice!,
+          triggeredPrice,
+          condition: item.alertCondition!,
+          currency: item.currency,
+          timestamp: new Date().toLocaleTimeString()
+        };
+        setToasts(prevToasts => [newAlert, ...prevToasts]);
+        setAlertHistory(prevHist => [newAlert, ...prevHist].slice(0, 10));
+      });
+    }
+  }, [portfolio]);
+
   // Load previous recommendations and profile if available
   useEffect(() => {
     const savedProfile = localStorage.getItem('ai_stock_user_profile');
@@ -68,6 +241,45 @@ export default function App() {
     if (savedRecs) setRecommendations(JSON.parse(savedRecs));
     if (savedOutlook) setMarketOutlook(savedOutlook);
     if (savedSources) setSources(JSON.parse(savedSources));
+  }, []);
+
+  // Trigger auto-sync on mount to fetch actual real-time stock prices
+  useEffect(() => {
+    handleSyncPrices();
+  }, []);
+
+  // Fluctuate prices slightly in real-time to simulate market activity and test price alerts
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // 1. Fluctuate catalog
+      setCatalog(prev => {
+        return prev.map(stock => {
+          const changePercent = (Math.random() * 0.16 - 0.08) / 100; // -0.08% to +0.08%
+          const nextPrice = Math.round(stock.price * (1 + changePercent) * 100) / 100;
+          return {
+            ...stock,
+            price: stock.currency === '원' ? Math.round(nextPrice) : nextPrice,
+            change: `${changePercent >= 0 ? '+' : ''}${(changePercent * 100).toFixed(2)}%`,
+            isPositive: changePercent >= 0
+          };
+        });
+      });
+
+      // 2. Fluctuate portfolio prices
+      setPortfolio(prev => {
+        return prev.map(item => {
+          const changePercent = (Math.random() * 0.16 - 0.08) / 100; // -0.08% to +0.08%
+          let nextPrice = item.currentPrice * (1 + changePercent);
+          nextPrice = item.currency === '원' ? Math.round(nextPrice) : Math.round(nextPrice * 100) / 100;
+          return {
+            ...item,
+            currentPrice: nextPrice
+          };
+        });
+      });
+    }, 7000); // every 7 seconds
+
+    return () => clearInterval(interval);
   }, []);
 
   // Handler to request AI recommendation using search grounding
@@ -90,6 +302,9 @@ export default function App() {
       }
 
       const data = await response.json();
+      if (data && data.isFallback) {
+        setIsFallbackActive(true);
+      }
       const recs = data.recommendations || [];
       const outlook = data.marketOutlook || '';
       const recSources = data.sources || [];
@@ -174,6 +389,40 @@ export default function App() {
     }
   };
 
+  // Set or update a price alert for a portfolio item
+  const handleUpdateAlertPrice = (itemId: string, alertPrice: number) => {
+    setPortfolio(prev => {
+      return prev.map(item => {
+        if (item.id === itemId) {
+          const alertCondition = alertPrice >= item.currentPrice ? 'above' : 'below';
+          return {
+            ...item,
+            alertPrice,
+            alertCondition,
+            alertTriggered: false
+          };
+        }
+        return item;
+      });
+    });
+  };
+
+  // Remove a price alert for a portfolio item
+  const handleRemoveAlert = (itemId: string) => {
+    setPortfolio(prev => {
+      return prev.map(item => {
+        if (item.id === itemId) {
+          const updated = { ...item };
+          delete updated.alertPrice;
+          delete updated.alertCondition;
+          delete updated.alertTriggered;
+          return updated;
+        }
+        return item;
+      });
+    });
+  };
+
   const getStyleKoreanName = (style: string) => {
     const styleMap: Record<string, string> = {
       aggressive: "공격투자형",
@@ -252,6 +501,18 @@ export default function App() {
       {/* 3. Main Body Viewport */}
       <main id="main-content-viewport" className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
+        {isFallbackActive && (
+          <div id="quota-fallback-notice-banner" className="mb-6 bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-start gap-3 shadow-sm">
+            <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" />
+            <div>
+              <span className="text-xs font-bold text-amber-800 block">⚠️ AI 실시간 API 할당량 초과 안내 (시뮬레이션 모드 활성화)</span>
+              <p className="text-[11px] text-amber-700 mt-0.5 leading-normal">
+                현재 Gemini API의 일일 실시간 검색 및 그라운딩 API 호출 한도가 초과되어, 고품질 백업 알고리즘 기반 시뮬레이션 데이터를 안전하게 활성화하여 서비스를 유지하고 있습니다. 가상 포트폴리오의 실시간 변동, 매매 실습 기능 등은 정상적으로 완벽히 이용 가능합니다.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Tab 1: AI Recommendations & Diagnosis */}
         {activeTab === 'recommend' && (
           <div id="recommend-tab-container" className="space-y-8 animate-fade-in">
@@ -415,6 +676,12 @@ export default function App() {
               onAddItem={handleAddToPortfolio}
               onResetPortfolio={handleResetPortfolio}
               initialBudget={profile ? profile.budget : 10000000}
+              catalog={catalog}
+              onSyncPrices={handleSyncPrices}
+              isSyncing={isSyncing}
+              onUpdateAlertPrice={handleUpdateAlertPrice}
+              onRemoveAlert={handleRemoveAlert}
+              alertHistory={alertHistory}
             />
           </div>
         )}
@@ -427,6 +694,43 @@ export default function App() {
         )}
 
       </main>
+
+      {/* Floating Price Alert Toasts Container */}
+      <div id="floating-toasts-container" className="fixed bottom-5 right-5 z-50 space-y-3 max-w-sm w-full pointer-events-none">
+        <AnimatePresence>
+          {toasts.map(toast => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, x: 100, scale: 0.9 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9, x: 50 }}
+              className="pointer-events-auto bg-slate-900 text-white rounded-2xl p-4 shadow-xl border border-slate-700/80 flex items-start gap-3"
+            >
+              <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                <Bell className="w-4 h-4 animate-bounce" />
+              </div>
+              <div className="flex-1">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold text-indigo-400">🔔 알림가 도달 알림</span>
+                  <span className="text-[9px] text-slate-400">{toast.timestamp}</span>
+                </div>
+                <p className="text-xs font-bold mt-1">
+                  {toast.name} ({toast.ticker})
+                </p>
+                <p className="text-[11px] text-slate-300 mt-0.5 leading-normal">
+                  설정 가격 {toast.currency}{toast.alertPrice.toLocaleString()} {toast.condition === 'above' ? '이상' : '이하'}에 도달했습니다! (현재가: {toast.currency}{toast.triggeredPrice.toLocaleString()})
+                </p>
+              </div>
+              <button
+                onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+                className="text-slate-400 hover:text-white font-bold text-xs shrink-0 cursor-pointer"
+              >
+                ✕
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
 
       {/* 4. Footer */}
       <footer id="app-footer" className="bg-slate-900 text-slate-400 text-xs py-8 mt-12 border-t border-slate-800">

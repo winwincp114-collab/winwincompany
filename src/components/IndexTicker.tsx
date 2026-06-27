@@ -18,24 +18,86 @@ export default function IndexTicker() {
   }, []);
 
   useEffect(() => {
-    // Softly fluctuate stock indexes every 8 seconds for real-time vibe
+    const fetchRealtimeIndexes = async () => {
+      try {
+        const res = await fetch("/api/realtime-prices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tickers: ["S&P 500", "NASDAQ", "KOSPI", "KOSDAQ", "NVDA", "005930"]
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.prices && Array.isArray(data.prices)) {
+            setTrends(prev => {
+              return prev.map(item => {
+                let match = data.prices.find((p: any) => 
+                  p.symbol === item.name || 
+                  (item.name.includes("NVDA") && p.symbol === "NVDA") || 
+                  (item.name === "삼성전자" && p.symbol === "005930")
+                );
+                if (!match) {
+                  match = data.prices.find((p: any) => 
+                    item.name.toLowerCase().includes(p.symbol.toLowerCase()) || 
+                    p.symbol.toLowerCase().includes(item.name.toLowerCase())
+                  );
+                }
+                if (match) {
+                  return {
+                    ...item,
+                    value: match.price,
+                    change: match.change || item.change,
+                    isPositive: match.isPositive !== undefined ? match.isPositive : item.isPositive
+                  };
+                }
+                return item;
+              });
+            });
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch real-time indexes", e);
+      }
+    };
+
+    fetchRealtimeIndexes();
+    // Refresh indices every 45 seconds
+    const priceInterval = setInterval(fetchRealtimeIndexes, 45000);
+    return () => clearInterval(priceInterval);
+  }, []);
+
+  useEffect(() => {
+    // Softly fluctuate stock indexes every 10 seconds for real-time micro-variation feeling
     const interval = setInterval(() => {
       setTrends(prev =>
         prev.map(item => {
-          const currentVal = parseFloat(item.value.replace(/,/g, ''));
-          const isPos = Math.random() > 0.45;
-          const deltaPercent = (Math.random() * 0.15).toFixed(2);
+          const cleanStr = item.value.replace(/[^0-9.]/g, '');
+          const currentVal = parseFloat(cleanStr);
+          if (isNaN(currentVal)) return item;
+
+          const isPos = Math.random() > 0.48;
+          const deltaPercent = (Math.random() * 0.04).toFixed(3);
           const newVal = isPos ? currentVal * (1 + parseFloat(deltaPercent) / 100) : currentVal * (1 - parseFloat(deltaPercent) / 100);
+
+          let formattedValue = item.value;
+          if (item.value.includes('$')) {
+            formattedValue = `$${newVal.toFixed(2)}`;
+          } else if (item.value.includes('원')) {
+            formattedValue = `${Math.round(newVal).toLocaleString()}원`;
+          } else {
+            formattedValue = newVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          }
           
           return {
             ...item,
-            value: newVal.toLocaleString(undefined, { minimumFractionDigits: item.value.includes('.') ? 2 : 0, maximumFractionDigits: item.value.includes('.') ? 2 : 0 }),
+            value: formattedValue,
             change: `${isPos ? '+' : '-'}${deltaPercent}%`,
             isPositive: isPos
           };
         })
       );
-    }, 8000);
+    }, 10000);
 
     return () => clearInterval(interval);
   }, []);
